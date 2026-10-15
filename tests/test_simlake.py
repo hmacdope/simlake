@@ -217,14 +217,16 @@ def test_virtual_dcd_survives_reopen(lake, dcd_copy):
     np.testing.assert_array_equal(u.atoms.positions, o.atoms.positions)
 
 
-def test_virtual_multiple_files_concatenate(lake, dcd_copy, tmp_path):
+def test_virtual_join_identical_files_keeps_later(lake, dcd_copy, tmp_path):
+    """Joining a file to itself is a full overlap: the later copy wins, steps never repeat."""
     second = str(tmp_path / "sources" / "adk2.dcd")
     shutil.copy(DCD, second)
     lake.create_system("adk_vac", PSF)
     lake.register_dcd("adk_vac", [dcd_copy, second])
     u = lake.universe("adk_vac", 0)
-    assert u.trajectory.n_frames == 196
-    u.trajectory[98 + 7]
+    assert u.trajectory.n_frames == 98
+    assert [s["dropped_frames"] for s in lake.system("adk_vac").replica_attrs(0)["sources"]] == [98, 0]
+    u.trajectory[7]
     o = mda.Universe(PSF, DCD)
     o.trajectory[7]
     np.testing.assert_array_equal(u.atoms.positions, o.atoms.positions)

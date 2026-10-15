@@ -280,29 +280,51 @@ print(f"{big.position.nbytes / 2**30:.1f} GiB of coordinates as {big.position.da
 # %% [markdown]
 # ### Watch dask work through it
 #
+# Start a `dask.distributed` client and open its **dashboard**: live task stream, worker
+# CPU and memory, and progress per task type. The workers are threads in this process
+# (`processes=False`), which avoids reopening the lake in every task.
+
+# %%
+import webbrowser
+from dask.distributed import Client, LocalCluster, progress
+
+cluster = LocalCluster(processes=False, n_workers=1, threads_per_worker=8, dashboard_address=":0")
+client = Client(cluster)
+print("dashboard:", client.dashboard_link)
+if not os.environ.get("SIMLAKE_HEADLESS"):  # set when the notebook is regenerated in batch
+    webbrowser.open(client.dashboard_link)
+client
+
+# %% [markdown]
 # Per-atom fluctuation for **every** atom in both replicas: one pass over all the
 # coordinates, about 22 GiB, as thousands of blocks. Building it reads nothing:
 
 # %%
-from dask.diagnostics import ProgressBar
-
 fluct = big.position.var("frame").sum("spatial") ** 0.5   # (replica, atom), single pass
 print(f"{len(fluct.data.__dask_graph__()):,d} tasks, nothing read yet")
 
 # %% [markdown]
-# `dask.compute` runs the graph. The progress bar follows the blocks as they are read,
-# decoded and reduced: first on 1 thread, then on 8.
+# `client.compute` starts the work in the background and returns a future;
+# `progress` follows it. Watch the dashboard's task stream fill up as blocks are read,
+# decoded and reduced on 8 threads.
 
 # %%
-timings = {}
-for threads in (1, 8):
-    print(f"{threads} thread(s):")
-    with dask.config.set(scheduler="threads", num_workers=threads), ProgressBar(dt=5.0):
-        t0 = time.perf_counter()
-        (fluct_out,) = dask.compute(fluct)
-        timings[threads] = time.perf_counter() - t0
-    print(f"   {2 * big.sizes['frame'] / timings[threads]:,.0f} frames/s over both replicas\n")
-print(f"speed-up with 8 threads: {timings[1] / timings[8]:.1f}x")
+t0 = time.perf_counter()
+future = client.compute(fluct)
+progress(future, notebook=False)  # dask's own progress bar; text so it also shows when saved
+fluct_out = future.result()
+t_cluster = time.perf_counter() - t0
+print(f"\n8 threads: {t_cluster:.1f} s, {2 * big.sizes['frame'] / t_cluster:,.0f} frames/s over both replicas")
+
+# %% [markdown]
+# For comparison, the same computation on a single thread:
+
+# %%
+with dask.config.set(scheduler="synchronous"):
+    t0 = time.perf_counter()
+    fluct.compute()
+    t_single = time.perf_counter() - t0
+print(f"1 thread: {t_single:.1f} s  ->  speed-up with 8 threads: {t_single / t_cluster:.1f}x")
 
 # %% [markdown]
 # The speed-up flattens beyond about 8 threads: zarr-python coordinates every read on a
@@ -329,8 +351,9 @@ rmsd_yiip = big.isel(replica=[1]).md.select("protein and backbone").md.rmsd()
 ca_yiip = big.isel(replica=[1]).md.select("protein and name CA").position
 rmsf_yiip = ca_yiip.var("frame").sum("spatial") ** 0.5
 
-with dask.config.set(scheduler="threads", num_workers=8), ProgressBar(dt=5.0):
-    rmsd_out, rmsf_out = dask.compute(rmsd_yiip, rmsf_yiip)
+futures = client.compute([rmsd_yiip, rmsf_yiip])
+progress(futures, notebook=False)
+rmsd_out, rmsf_out = client.gather(futures)
 
 # %%
 fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 3))
@@ -345,6 +368,10 @@ for segid, color in (("PROA", "#2a78d6"), ("PROB", "#eb6834")):
 ax2.set(xlabel="residue", ylabel="Cα RMSF (Å)", title="Per-residue flexibility, both chains")
 ax2.legend()
 plt.tight_layout();
+
+# %%
+client.close()
+cluster.close()
 
 # %% [markdown]
 # ## Versions
@@ -401,3 +428,7 @@ cloud.open_dataset("adk").md.select("backbone").md.rmsd().compute().round(2)
 # %% tags=["setup"]
 server.stop()
 shutil.rmtree(workdir, ignore_errors=True)
+
+# %%
+
+# %%

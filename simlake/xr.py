@@ -1,6 +1,7 @@
 """Lazy xarray views of lake systems, and the ``.md`` accessor."""
 
 import functools
+import warnings
 
 import dask.array as da
 import numpy as np
@@ -60,6 +61,7 @@ def open_system_dataset(system):
         raise ValueError(f"system {system.name!r} has no replicas")
     storage_order = system.storage_order
     parts = [_replica_dataset(system, r, storage_order) for r in replicas]
+    _warn_if_misaligned(replicas, [p.time.values for p in parts])
     ds = xr.concat(parts, dim="replica", join="outer", fill_value={"step": -1})
 
     top = system.topology()
@@ -84,6 +86,30 @@ def open_system_dataset(system):
         "simlake_groups": ", ".join(g["name"] for g in system.groups),
     })
     return ds
+
+
+def _warn_if_misaligned(replicas, times, rtol=1e-3):
+    """Replicas are stacked by frame index; warn when that index means different times."""
+    if len(replicas) < 2:
+        return
+    starts = np.array([t[0] if len(t) else np.nan for t in times])
+    dts = np.array([np.median(np.diff(t)) if len(t) > 1 else np.nan for t in times])
+    scale = np.nanmax(np.abs(dts)) if np.isfinite(dts).any() else 1.0
+    problems = []
+    if np.isfinite(dts).sum() > 1 and np.nanmax(dts) - np.nanmin(dts) > rtol * scale:
+        problems.append("time between frames (" + ", ".join(
+            f"replica {r}: {d:g} ps" for r, d in zip(replicas, dts) if np.isfinite(d)) + ")")
+    if np.isfinite(starts).sum() > 1 and np.nanmax(starts) - np.nanmin(starts) > rtol * scale:
+        problems.append("start time (" + ", ".join(
+            f"replica {r}: {t0:g} ps" for r, t0 in zip(replicas, starts) if np.isfinite(t0)) + ")")
+    if problems:
+        warnings.warn(
+            "Replicas differ in " + " and ".join(problems) + ". The dataset stacks replicas by "
+            "frame index, so the same `frame` is a different time in each replica; use the "
+            "per-replica `time` variable when that matters.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 @functools.lru_cache(maxsize=16)

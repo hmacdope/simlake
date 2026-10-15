@@ -126,6 +126,26 @@ def _write_time_step(group, time, step):
     group.create_array("step", data=step, dimension_names=["frame"])
 
 
+def frames_to_keep(steps_per_file):
+    """How many leading frames of each joined file to keep, so steps never repeat.
+
+    The later file wins where files overlap, as in MDAnalysis' ``ChainReader(continuous=True)``:
+    frames of earlier files at or beyond the next file's first step are dropped. That
+    covers the duplicated boundary frame of GROMACS restarts without -append, and
+    restarts from an older checkpoint (the rerun replaces what the crashed run wrote).
+    """
+    keep = [len(s) for s in steps_per_file]
+    for k in range(1, len(steps_per_file)):
+        if not len(steps_per_file[k]):
+            continue
+        first = steps_per_file[k][0]
+        for j in range(k):
+            beyond = np.nonzero(np.asarray(steps_per_file[j][: keep[j]]) >= first)[0]
+            if beyond.size:
+                keep[j] = int(beyond[0])
+    return keep
+
+
 # --------------------------------------------------------------------------- DCD
 
 
@@ -176,7 +196,8 @@ def write_virtual_dcd(group, store, array_prefix, paths):
     if len(n_atoms) != 1:
         raise UnsupportedVariant(f"DCD files have different atom counts: {sorted(n_atoms)}")
     (n_atoms,) = n_atoms
-    n_frames = sum(lay["n_frames"] for lay in layouts)
+    keep = frames_to_keep([lay["istart"] + np.arange(lay["n_frames"]) * lay["nsavc"] for lay in layouts])
+    n_frames = sum(keep)
 
     pos = group.create_array(
         "position_sa",
@@ -193,12 +214,12 @@ def write_virtual_dcd(group, store, array_prefix, paths):
     time, step, boxes = [], [], []
     frame0 = 0
     sources = []
-    for lay in layouts:
+    for lay, n_keep in zip(layouts, keep):
         location = locations.source_url(lay["path"])
         fp = locations.fingerprint(lay["path"])
         checksum = locations.icechunk_checksum(fp)
         record = 4 + 4 * n_atoms + 4
-        for i in range(lay["n_frames"]):
+        for i in range(n_keep):
             base = lay["header_size"] + i * lay["frame_size"] + lay["unitcell_bytes"]
             for k in range(3):
                 specs.append(icechunk.VirtualChunkSpec(
@@ -211,12 +232,15 @@ def write_virtual_dcd(group, store, array_prefix, paths):
         # Small per-frame metadata is copied in, so time/box queries never touch the source.
         reader = DCDReader(lay["path"])
         for i, ts in enumerate(reader):
+            if i >= n_keep:
+                break
             time.append(ts.time)
             step.append(lay["istart"] + i * lay["nsavc"])
             boxes.append(ts.triclinic_dimensions if ts.dimensions is not None else np.full((3, 3), np.nan))
         reader.close()
-        sources.append({**fp, "format": "dcd", "n_frames": lay["n_frames"]})
-        frame0 += lay["n_frames"]
+        sources.append({**fp, "format": "dcd", "n_frames": n_keep,
+                        "dropped_frames": lay["n_frames"] - n_keep})
+        frame0 += n_keep
 
     failed = store.set_virtual_refs(f"{array_prefix}/position_sa", specs)
     if failed:
@@ -257,7 +281,10 @@ def write_virtual_xtc(group, store, array_prefix, urls):
     if len(n_atoms) != 1:
         raise UnsupportedVariant(f"XTC files have different atom counts: {sorted(n_atoms)}")
     (n_atoms,) = n_atoms
-    n_frames = sum(len(s["offset"]) for s in scans)
+    keep = frames_to_keep([s["step"] for s in scans])
+    scans = [{k: (v[:n] if isinstance(v, np.ndarray) else v) for k, v in s.items()} | {"dropped": len(s["offset"]) - n}
+             for s, n in zip(scans, keep)]
+    n_frames = sum(keep)
 
     pos = group.create_array(
         "position",
@@ -298,6 +325,7 @@ def write_virtual_xtc(group, store, array_prefix, urls):
         "n_frames": n_frames,
         "periodic": periodic,
         "precision": None,
-        "sources": [{**fp, "format": "xtc", "n_frames": len(s["offset"])} for fp, s in zip(fps, scans)],
+        "sources": [{**fp, "format": "xtc", "n_frames": len(s["offset"]), "dropped_frames": s["dropped"]}
+                    for fp, s in zip(fps, scans)],
     })
     return n_atoms, n_frames
