@@ -74,6 +74,7 @@ def open_system_dataset(system):
         atom_name=("atom", top["names"][storage_order]),
         atom_resname=("atom", top["resnames"][storage_order]),
         atom_resid=("atom", top["resids"][storage_order]),
+        **({"atom_segid": ("atom", top["segids"][storage_order])} if "segids" in top else {}),
     )
     ds.attrs.update({
         "simlake_lake": system.lake.location,

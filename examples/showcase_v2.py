@@ -241,45 +241,110 @@ ax.set(xlabel="residue", ylabel="Cα RMSF (Å)", title="Per-residue flexibility,
 ax.legend();
 
 # %% [markdown]
-# ## At scale: dask on a bigger trajectory
+# ## At scale: a real membrane protein
 #
-# The example files above are 10 frames, too small for parallelism to show. Here is a
-# random-walk trajectory of 100,000 atoms x 2,000 frames (about 1 GB of XTC), made with
-# `simlake.testing.noise_trajectory`, read in place and as a native copy.
+# The example files above have 10 frames, too few for parallelism to show. Here is
+# YiiP, a zinc transporter in a lipid membrane, from
+# [MDAnalysisData](https://www.mdanalysis.org/MDAnalysisData/yiip_equilibrium.html):
+# 111,815 atoms x 9,001 frames (90 ns), a 3.5 GB XTC. The copy in `data/` is used when
+# it exists; otherwise MDAnalysisData downloads it (once).
 
 # %%
+import os
 import time
-from simlake.testing import noise_trajectory
 
-gro, xtc = noise_trajectory(f"{workdir}/big", n_atoms=100_000, n_frames=2_000)
-lake.create_system("big", gro)
-lake.register("big", xtc)                            # replica 0: in place
-lake.add_replica("big", mda.Universe(gro, xtc))      # replica 1: native copy
+from MDAnalysisData import yiip_equilibrium
 
-big = lake.open_dataset("big").position
-print(f"{big.nbytes / 2**30:.1f} GiB of coordinates as {big.data.npartitions:,d} dask blocks")
+data_home = next((d for d in ("data/mdanalysisdata", "../data/mdanalysisdata") if os.path.isdir(d)), None)
+yiip = yiip_equilibrium.fetch_yiip_equilibrium_long(data_home=data_home)
+
+lake.create_system("yiip", yiip.topology, metadata={"source": "MDAnalysisData"})
+pd.DataFrame(lake.system("yiip").groups)  # default groups: a real membrane system
 
 # %% [markdown]
-# Per-atom fluctuation over every atom and frame: one pass over all the data, which
-# dask spreads over threads. Compare 1 thread with 8.
+# Register the XTC in place (it only reads frame headers), then copy it in as well, so
+# both kinds of replica are there to compare.
 
 # %%
-fluct = big.var("frame").sum("spatial") ** 0.5      # single-pass RMSF, (replica, atom)
+t0 = time.perf_counter()
+lake.register("yiip", yiip.trajectory)                          # replica 0: in place
+print(f"register in place: {time.perf_counter() - t0:.1f} s")
 
+t0 = time.perf_counter()
+lake.add_replica("yiip", mda.Universe(yiip.topology, yiip.trajectory))  # replica 1: native
+print(f"copy in:           {time.perf_counter() - t0:.0f} s")
+
+big = lake.open_dataset("yiip")
+print(f"{big.position.nbytes / 2**30:.1f} GiB of coordinates as {big.position.data.npartitions:,d} dask blocks")
+
+# %% [markdown]
+# ### Watch dask work through it
+#
+# Per-atom fluctuation for **every** atom in both replicas: one pass over all the
+# coordinates, about 22 GiB, as thousands of blocks. Building it reads nothing:
+
+# %%
+from dask.diagnostics import ProgressBar
+
+fluct = big.position.var("frame").sum("spatial") ** 0.5   # (replica, atom), single pass
+print(f"{len(fluct.data.__dask_graph__()):,d} tasks, nothing read yet")
+
+# %% [markdown]
+# `dask.compute` runs the graph. The progress bar follows the blocks as they are read,
+# decoded and reduced: first on 1 thread, then on 8.
+
+# %%
 timings = {}
 for threads in (1, 8):
-    with dask.config.set(scheduler="threads", num_workers=threads):
+    print(f"{threads} thread(s):")
+    with dask.config.set(scheduler="threads", num_workers=threads), ProgressBar(dt=5.0):
         t0 = time.perf_counter()
-        fluct.compute()
+        (fluct_out,) = dask.compute(fluct)
         timings[threads] = time.perf_counter() - t0
-    print(f"{threads} thread(s): {timings[threads]:5.1f} s  "
-          f"({2 * big.sizes['frame'] / timings[threads]:,.0f} frames/s over both replicas)")
-print(f"speed-up: {timings[1] / timings[8]:.1f}x")
+    print(f"   {2 * big.sizes['frame'] / timings[threads]:,.0f} frames/s over both replicas\n")
+print(f"speed-up with 8 threads: {timings[1] / timings[8]:.1f}x")
 
 # %% [markdown]
 # The speed-up flattens beyond about 8 threads: zarr-python coordinates every read on a
 # single event-loop thread, which becomes the bottleneck. Decoding (pcodec, and the
 # Cython XTC decoder) already runs off that thread and releases the GIL.
+
+# %%
+by_group = fluct_out.sel(replica=1).groupby("atom_group").mean()
+fig, ax = plt.subplots(figsize=(6, 2.4))
+ax.barh(by_group.atom_group, by_group, color="#2a78d6", height=0.5)
+for y, v in enumerate(by_group.values):
+    ax.text(v, y, f"  {v:.1f} Å", va="center")
+ax.invert_yaxis()
+ax.grid(axis="y", visible=False)
+ax.set(xlabel="mean per-atom fluctuation over 90 ns (Å)", title="How much each group moves")
+ax.set_xlim(0, float(by_group.max()) * 1.2);
+
+# %% [markdown]
+# A lighter pair of analyses on the protein only: backbone RMSD of the dimer, and
+# per-residue Cα fluctuation of each chain. Only the protein group's chunks are read.
+
+# %%
+rmsd_yiip = big.isel(replica=[1]).md.select("protein and backbone").md.rmsd()
+ca_yiip = big.isel(replica=[1]).md.select("protein and name CA").position
+rmsf_yiip = ca_yiip.var("frame").sum("spatial") ** 0.5
+
+with dask.config.set(scheduler="threads", num_workers=8), ProgressBar(dt=5.0):
+    rmsd_out, rmsf_out = dask.compute(rmsd_yiip, rmsf_yiip)
+
+# %%
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 3))
+t_ns = big.time.sel(replica=1) / 1000
+ax1.plot(t_ns, rmsd_out.sel(replica=1), color="#2a78d6", lw=1)
+ax1.set(xlabel="time (ns)", ylabel="backbone RMSD (Å)", title="YiiP dimer, backbone RMSD")
+
+rmsf_native = rmsf_out.sel(replica=1)
+for segid, color in (("PROA", "#2a78d6"), ("PROB", "#eb6834")):
+    chain = rmsf_native.where(rmsf_native.atom_segid == segid, drop=True)
+    ax2.plot(chain.atom_resid, chain, color=color, lw=1.2, label=f"chain {segid[-1]}")
+ax2.set(xlabel="residue", ylabel="Cα RMSF (Å)", title="Per-residue flexibility, both chains")
+ax2.legend()
+plt.tight_layout();
 
 # %% [markdown]
 # ## Versions
