@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61", "Cython>=3"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "simlake"
+version = "0.0.1"
+description = "Prototype: a versioned Zarr v3 / Icechunk data lake for molecular dynamics trajectories"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "zarr>=3.4",
+    "icechunk>=2.3",
+    "cast-value-rs>=0.4.2",  # backend for zarr's spec-level cast_value codec
+    "pcodec>=1.0",  # numeric codec used for coordinates
+    "MDAnalysis>=2.8",
+    "xarray",
+    "dask",
+    "pandas",
+    "duckdb",
+    "fsspec",
+]
+
+[project.optional-dependencies]
+s3 = ["s3fs"]
+showcase = ["jupytext", "nbconvert", "ipykernel", "matplotlib", "s3fs", "moto[server]>=5"]
+test = ["pytest", "MDAnalysisTests>=2.8", "s3fs", "moto[server]>=5"]
+
+[tool.setuptools]
+packages = ["simlake"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore:DCDReader currently makes independent timesteps:DeprecationWarning",
+]

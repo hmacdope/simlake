@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+.pytest_cache/
+demo-lake/
+*.lake/
+data/
+# compiled Cython extension
+simlake/_xtc.c
+*.so
+build/
+.ipynb_checkpoints/
