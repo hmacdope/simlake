@@ -47,8 +47,23 @@ import simlake as sl
 
 lake = sl.Lake.create(f"{workdir}/kinase.lake")
 lake.create_system("adk", TPR, metadata={"forcefield": "oplsaa"})
-# atoms are split into groups, by default by molecule type, or your own:
-#   lake.create_system("adk", TPR, groups={"protein": "protein", "ligand": "resname ATP", ...})
+
+# %% [markdown]
+# A system's atoms are split into named **groups**, each stored so it can be read on
+# its own. By default they are split by molecule type:
+
+# %%
+import pandas as pd
+
+pd.DataFrame(lake.system("adk").groups)
+
+# %% [markdown]
+# Or pass your own as MDAnalysis selections. Groups may not overlap; atoms that no group
+# claims go into `other`.
+
+# %%
+lake.create_system("adk_by_part", TPR, groups={"backbone": "backbone",
+                                               "sidechains": "protein and not backbone"})
 
 # %% [markdown]
 # ## Add trajectories
@@ -60,6 +75,20 @@ lake.create_system("adk", TPR, metadata={"forcefield": "oplsaa"})
 lake.register("adk", f"{workdir}/run0.xtc", metadata={"temperature": 300})
 lake.add_replica("adk", mda.Universe(TPR, f"{workdir}/run1.xtc"), metadata={"temperature": 310});
 
+# %%
+lake.system("adk").stored_bytes(replica=1)  # bytes per group: water dominates
+
+# %% [markdown]
+# Underneath it is plain Zarr: each group is an ordinary, sharded array that any Zarr
+# reader can open.
+
+# %%
+import zarr
+
+positions = zarr.open_group(lake.session().store, mode="r")["systems/adk/replicas/1/positions"]
+for name, arr in positions.arrays():
+    print(f"{name:8s} shape={arr.shape}  chunks={arr.chunks}  shards={arr.shards}")
+
 # %% [markdown]
 # ## Find data
 
@@ -69,7 +98,8 @@ lake.query("SELECT system, replica, storage, n_frames, temperature FROM trajecto
 # %% [markdown]
 # ## Analyse with MDAnalysis
 #
-# A replica is a normal `Universe`.
+# A replica is a normal `Universe`. In-place XTC replicas read about 2x faster than
+# MDAnalysis' own XTC reader (see the benchmarks in the README).
 
 # %%
 from MDAnalysis.analysis import rms
@@ -107,7 +137,7 @@ pos.data
 
 # %%
 print("chunks along each dim:", dict(zip(pos.dims, pos.chunks)))
-print("groups:", ds.md.groups, "-> atom chunk edges sit on group boundaries")
+print("groups:", ds.md.groups, "-> one stored array per group, so no block mixes groups")
 print(f"blocks: {pos.data.npartitions} | size if loaded: {pos.nbytes / 2**20:.1f} MB | read so far: 0 bytes")
 
 # %% [markdown]
@@ -211,6 +241,47 @@ ax.set(xlabel="residue", ylabel="Cα RMSF (Å)", title="Per-residue flexibility,
 ax.legend();
 
 # %% [markdown]
+# ## At scale: dask on a bigger trajectory
+#
+# The example files above are 10 frames, too small for parallelism to show. Here is a
+# random-walk trajectory of 100,000 atoms x 2,000 frames (about 1 GB of XTC), made with
+# `simlake.testing.noise_trajectory`, read in place and as a native copy.
+
+# %%
+import time
+from simlake.testing import noise_trajectory
+
+gro, xtc = noise_trajectory(f"{workdir}/big", n_atoms=100_000, n_frames=2_000)
+lake.create_system("big", gro)
+lake.register("big", xtc)                            # replica 0: in place
+lake.add_replica("big", mda.Universe(gro, xtc))      # replica 1: native copy
+
+big = lake.open_dataset("big").position
+print(f"{big.nbytes / 2**30:.1f} GiB of coordinates as {big.data.npartitions:,d} dask blocks")
+
+# %% [markdown]
+# Per-atom fluctuation over every atom and frame: one pass over all the data, which
+# dask spreads over threads. Compare 1 thread with 8.
+
+# %%
+fluct = big.var("frame").sum("spatial") ** 0.5      # single-pass RMSF, (replica, atom)
+
+timings = {}
+for threads in (1, 8):
+    with dask.config.set(scheduler="threads", num_workers=threads):
+        t0 = time.perf_counter()
+        fluct.compute()
+        timings[threads] = time.perf_counter() - t0
+    print(f"{threads} thread(s): {timings[threads]:5.1f} s  "
+          f"({2 * big.sizes['frame'] / timings[threads]:,.0f} frames/s over both replicas)")
+print(f"speed-up: {timings[1] / timings[8]:.1f}x")
+
+# %% [markdown]
+# The speed-up flattens beyond about 8 threads: zarr-python coordinates every read on a
+# single event-loop thread, which becomes the bottleneck. Decoding (pcodec, and the
+# Cython XTC decoder) already runs off that thread and releases the GIL.
+
+# %% [markdown]
 # ## Versions
 #
 # Every write is a commit. Tag what you analysed, and read it back later.
@@ -265,7 +336,3 @@ cloud.open_dataset("adk").md.select("backbone").md.rmsd().compute().round(2)
 # %% tags=["setup"]
 server.stop()
 shutil.rmtree(workdir, ignore_errors=True)
-
-# %%
-
-# %%

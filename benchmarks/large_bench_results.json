@@ -1,0 +1,89 @@
+[
+  {
+    "dataset": "yiip",
+    "n_atoms": 111815,
+    "n_frames": 9001,
+    "xtc_bytes": 3722148588,
+    "groups": {
+      "protein": 8814,
+      "lipids": 30096,
+      "water": 72717,
+      "ions": 132,
+      "other": 56
+    },
+    "register_s": 0.06968292699821177,
+    "copy_in_s": 43.00484425200193,
+    "native_bytes": 4521018665,
+    "native_bytes_by_group": {
+      "protein": 266112996,
+      "lipids": 910384028,
+      "water": 3336080722,
+      "ions": 6113944,
+      "other": 2326975
+    },
+    "frames_per_s": {
+      "MDAnalysis XTC": 418.79651623126983,
+      "lake in place (XTC)": 858.4758202483725,
+      "lake native": 425.27852146768583,
+      "MDAnalysis XTC, protein atoms": 580.756229527316,
+      "lake in place, group protein": 1964.5871637253822,
+      "lake native, group protein": 4106.153107706943,
+      "xarray+dask backbone RMSD, in place": 1516.0903153630468,
+      "xarray+dask backbone RMSD, native": 4639.384170749921
+    }
+  },
+  {
+    "dataset": "noise_100k",
+    "n_atoms": 100000,
+    "n_frames": 5000,
+    "xtc_bytes": 2659625672,
+    "groups": {
+      "protein": 10000,
+      "water": 90000
+    },
+    "register_s": 0.04008984200117993,
+    "copy_in_s": 22.72841942499872,
+    "native_bytes": 2519348181,
+    "native_bytes_by_group": {
+      "protein": 251934402,
+      "water": 2267413779
+    },
+    "frames_per_s": {
+      "MDAnalysis XTC": 384.07540558708126,
+      "lake in place (XTC)": 915.6333685501096,
+      "lake native": 445.9236828589046,
+      "MDAnalysis XTC, protein atoms": 495.06370092658204,
+      "lake in place, group protein": 1930.1803758649783,
+      "lake native, group protein": 4516.4757653015995,
+      "xarray+dask backbone RMSD, in place": 1533.674547577912,
+      "xarray+dask backbone RMSD, native": 4448.078963839807
+    }
+  },
+  {
+    "dataset": "noise_1m",
+    "n_atoms": 1000000,
+    "n_frames": 500,
+    "xtc_bytes": 2812531928,
+    "groups": {
+      "protein": 100000,
+      "water": 900000
+    },
+    "register_s": 0.016057134998845868,
+    "copy_in_s": 24.86852764300056,
+    "native_bytes": 2707290627,
+    "native_bytes_by_group": {
+      "protein": 270736262,
+      "water": 2436554365
+    },
+    "frames_per_s": {
+      "MDAnalysis XTC": 37.845446100979466,
+      "lake in place (XTC)": 97.39414973128982,
+      "lake native": 51.30787194492552,
+      "MDAnalysis XTC, protein atoms": 49.167264121926365,
+      "lake in place, group protein": 220.81017549825788,
+      "lake native, group protein": 635.9231825563603,
+      "xarray+dask backbone RMSD, in place": 190.6325113868301,
+      "xarray+dask backbone RMSD, native": 678.8942813511563
+    }
+  }
+]

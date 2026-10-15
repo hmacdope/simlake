@@ -206,6 +206,39 @@ On the 98-frame, 3,341-atom DCD: original 20,400, virtual 2,100, native copy 11,
 > in one block, and the benchmark never cleared it between passes. The benchmark now
 > clears the cache before each pass.
 
+### Large trajectories (`benchmarks/large_bench.py`)
+
+One full pass per read; warm page cache, so this measures decoding and the read stack,
+not disk. YiiP is real data (MDAnalysisData); the noise sets come from
+`simlake.testing.noise_trajectory` (realistic for speed, worst case for compression).
+
+| frames/s | YiiP 111,815 atoms x 9,001 | noise 100k x 5,000 | noise 1M x 500 |
+|---|---|---|---|
+| MDAnalysis XTC | 419 | 384 | 38 |
+| lake, XTC in place | **858** (2.0x) | **916** (2.4x) | **97** (2.6x) |
+| lake, native | 425 (1.0x) | 446 (1.2x) | 51 (1.3x) |
+| MDAnalysis XTC, protein atoms only | 581 | 495 | 49 |
+| lake in place, protein group | 1,965 | 1,930 | 221 |
+| lake native, protein group | **4,106** (9.8x) | **4,516** (11.8x) | **636** (16.7x) |
+| xarray+dask backbone RMSD, native | 4,639 | 4,448 | 679 |
+
+| | YiiP | noise 100k | noise 1M |
+|---|---|---|---|
+| register in place | 0.1 s | < 0.1 s | < 0.1 s |
+| copy in (native) | 43 s | 23 s | 25 s |
+| native size vs XTC | 1.21x | 0.95x | 0.96x |
+
+YiiP's default groups: protein 8,814, lipids 30,096, water 72,717, ions 132, and
+`other` 56 (its zinc sites, modelled as a zinc plus six dummy atoms).
+
+In-place XTC reads are about 2x MDAnalysis' XTC reader everywhere; reading one group
+from a native copy is 10-17x. Reading every atom of a native copy is no faster than
+XTC, and on real data the native copy is 1.2x the XTC's size, which is worth a look.
+
+Dask on the threaded scheduler scales to about 8 threads (2-3x), then flattens:
+zarr-python coordinates every read on one event-loop thread. `dask.distributed`
+processes were slower here, because each task reopens the lake.
+
 ## Findings from building it
 
 - **Icechunk is not fork-safe.** MDAnalysis `multiprocessing`/`dask` backends hang
