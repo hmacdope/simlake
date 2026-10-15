@@ -29,7 +29,15 @@ def _replica_dataset(system, replica, storage_order):
 
     if attrs["storage"] == "native":
         # One array per atom group; groups share frame chunking, so they join block for block.
-        pos = da.concatenate([_dask(group[f"positions/{name}"]) for name in system.group_names], axis=1)
+        # Dask blocks span several stored chunks along frame (the shortest group shard), so
+        # the task graph stays small enough for the distributed scheduler's per-task cost.
+        arrays = [group[f"positions/{name}"] for name in system.group_names]
+        frames = min(arr.shards[0] if arr.shards else arr.chunks[0] for arr in arrays)
+        pos = da.concatenate(
+            [da.from_array(arr, chunks=(frames, arr.chunks[1], 3), lock=False, asarray=True,
+                           name=f"simlake-{arr.path}") for arr in arrays],
+            axis=1,
+        )
     else:
         # Virtual replicas have one frame per chunk in topology order. Batch frames into
         # larger dask chunks, convert to (frame, atom, spatial) in Angstrom, reorder.
